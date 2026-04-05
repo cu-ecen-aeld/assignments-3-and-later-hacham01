@@ -1,6 +1,5 @@
 #!/bin/bash
 # Script outline to install and build kernel.
-# Author: Siddhant Jajoo.
 
 set -e
 set -u
@@ -23,7 +22,7 @@ fi
 
 mkdir -p ${OUTDIR}
 
-cd "$OUTDIR"
+cd "${OUTDIR}"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
     #Clone only if the repository does not exist.
 	echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
@@ -34,47 +33,116 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
 
-    # TODO: Add your kernel build steps here
+    echo "Building the kernel"
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE -j4 Image dtbs
+    cp "${OUTDIR}/linux-stable/arch/arm64/boot/Image" "${OUTDIR}/Image"
 fi
 
-echo "Adding the Image in outdir"
+echo "Copying kernel Image to OUTDIR"
 
 echo "Creating the staging directory for the root filesystem"
-cd "$OUTDIR"
+cd "${OUTDIR}"
 if [ -d "${OUTDIR}/rootfs" ]
 then
 	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
     sudo rm  -rf ${OUTDIR}/rootfs
 fi
 
-# TODO: Create necessary base directories
+echo "Creating rootfs structure"
+mkdir -p ${OUTDIR}/rootfs
+cd ${OUTDIR}/rootfs
 
-cd "$OUTDIR"
+mkdir -p bin \
+    dev \
+    etc \
+    home \
+    lib \
+    lib64 \
+    proc \
+    sbin \
+    sys \
+    tmp \
+    usr \
+    usr/bin \
+    usr/lib \
+    usr/sbin \
+    var \
+    var/log
+
+cd "${OUTDIR}"
 if [ ! -d "${OUTDIR}/busybox" ]
 then
-git clone git://busybox.net/busybox.git
+git clone https://github.com/mirror/busybox
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-    # TODO:  Configure busybox
+
+    echo "Configuring busybox"
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE distclean
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
 else
     cd busybox
 fi
 
-# TODO: Make and install busybox
+echo "Building busybox"
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j4
+make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
+
+# Ensure sh exists for init
+cd "${OUTDIR}/rootfs/bin"
+ln -sf busybox sh
 
 echo "Library dependencies"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+${CROSS_COMPILE}readelf -a busybox | grep "program interpreter"
+${CROSS_COMPILE}readelf -a busybox | grep "Shared library"
 
-# TODO: Add library dependencies to rootfs
+cd ${OUTDIR}/rootfs
 
-# TODO: Make device nodes
+echo "Adding library dependencies"
+SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+ROOTFS="${OUTDIR}/rootfs"
+TARGET="${ROOTFS}/bin/busybox"
 
-# TODO: Clean and build the writer utility
+INTERPRETER=$(${CROSS_COMPILE}readelf -l ${TARGET} | grep "program interpreter" | awk -F ': ' '{print $2}' | tr -d ']')
+INTERPRETER_LIB=$(basename "${INTERPRETER}")
+find "${SYSROOT}" -name "${INTERPRETER_LIB}" -exec cp -L {} "${ROOTFS}/lib64/" \;
 
-# TODO: Copy the finder related scripts and executables to the /home directory
-# on the target rootfs
+SLIBS=$(${CROSS_COMPILE}readelf -d "${TARGET}" | grep "Shared library" | awk -F '[' '{print $2}' | tr -d ']')
+for LIB in ${SLIBS}; do
+    find "${SYSROOT}" -name "${LIB}" -exec cp -L {} "${ROOTFS}/lib64/" \;
+done
 
-# TODO: Chown the root directory
+# Ensure ELF loader exists at the exact path expected by the kernel
+cp -L "${SYSROOT}/lib/ld-linux-aarch64.so.1" "${ROOTFS}/lib/"
 
-# TODO: Create initramfs.cpio.gz
+${CROSS_COMPILE}strip --strip-unneeded "${ROOTFS}/lib64"/* 2>/dev/null || true 
+
+cd "${ROOTFS}"
+ln -sfn lib64 lib
+echo "Creating device nodes"
+sudo mknod -m 666 dev/null c 1 3
+sudo mknod -m 600 dev/console c 5 1
+
+echo "Building the writer utility"
+cd "${FINDER_APP_DIR}"
+make clean
+make CROSS_COMPILE=${CROSS_COMPILE}
+
+echo "Copying writer and finder scripts to home..."
+cp writer "${ROOTFS}/home/"
+mkdir -p "${ROOTFS}/home/conf/"
+cp finder.sh "${ROOTFS}/home/"
+cp finder-test.sh "${ROOTFS}/home/"
+cp ../conf/* "${ROOTFS}/home/conf/"
+cp autorun-qemu.sh "${ROOTFS}/home/"
+
+
+# Chown the root directory
+echo "Creating initramfs..."
+sudo chown -R root:root "${ROOTFS}"
+
+# Create initramfs.cpio.gz
+cd "${ROOTFS}"
+find . | cpio -ov -H newc --owner root:root > "${OUTDIR}/initramfs.cpio"
+cd "${OUTDIR}"
+gzip -f initramfs.cpio
