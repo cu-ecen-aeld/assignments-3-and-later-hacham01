@@ -1,5 +1,4 @@
-# Use Buildroot's cross-compiler
-CC ?= $(CROSS_COMPILE)gcc
+CC ?= gcc
 
 CFLAGS ?= -Wall -Wextra -O2
 TARGET = aesdsocket
