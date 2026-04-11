@@ -1,5 +1,7 @@
-CC ?= gcc
-CFLAGS = -Wall -Wextra -g
+# Use Buildroot's cross-compiler
+CC ?= $(CROSS_COMPILE)gcc
+
+CFLAGS ?= -Wall -Wextra -O2
 TARGET = aesdsocket
 SOURCE = aesdsocket.c
 
@@ -12,3 +14,4 @@ $(TARGET): $(SOURCE)
 
 clean:
 	rm -f $(TARGET)
+
